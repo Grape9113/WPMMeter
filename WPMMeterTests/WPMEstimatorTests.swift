@@ -2,6 +2,11 @@ import XCTest
 @testable import WPMMeter
 
 final class WPMEstimatorTests: XCTestCase {
+    func testHostApplicationHasStableBundleIdentity() {
+        XCTAssertEqual(Bundle.main.bundleIdentifier, "com.grape9113.WPMMeter")
+        XCTAssertEqual(Bundle.main.object(forInfoDictionaryKey: "CFBundleExecutable") as? String, "WPMMeter")
+    }
+
     func testReportsKnownRate() {
         var estimator = WPMEstimator()
         estimator.replace(.init(id: "a", start: 0, end: 10, wordCount: 25))

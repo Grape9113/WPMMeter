@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import CoreMedia
 import ScreenCaptureKit
 import Speech
@@ -29,6 +30,21 @@ final class MeterModel: ObservableObject {
     private var pipeline: SpeechMeterPipeline?
     private var silenceTask: Task<Void, Never>?
     private var startTask: Task<Void, Never>?
+
+    init() {
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self else { return }
+            let defaults = UserDefaults.standard
+            if defaults.bool(forKey: "paused") {
+                self.stop()
+            } else if defaults.bool(forKey: "permissionIntroduced") {
+                self.start(danish: defaults.bool(forKey: "danish"))
+            } else {
+                self.requirePermission()
+            }
+        }
+    }
 
     func start(danish: Bool) {
         stop(markPaused: false)
@@ -83,6 +99,8 @@ actor SpeechMeterPipeline {
     private var resultTask: Task<Void, Never>?
     private var analysisTask: Task<Void, Never>?
     private var output: CaptureOutput?
+    private var analyzerFormat: AVAudioFormat?
+    private var inputConverter: AnalyzerInputConverter?
     private var lastAudioTime: TimeInterval?
     private var lastResultUptime: TimeInterval?
 
@@ -120,6 +138,8 @@ actor SpeechMeterPipeline {
         await analyzer?.cancelAndFinishNow()
         self.stream = nil
         analyzer = nil
+        analyzerFormat = nil
+        inputConverter = nil
         output = nil
         estimator.reset()
     }
@@ -140,6 +160,8 @@ actor SpeechMeterPipeline {
         let inputs = AsyncStream<AnalyzerInput>(bufferingPolicy: .bufferingNewest(24)) { inputContinuation = $0 }
         let analyzer = SpeechAnalyzer(modules: modules)
         self.analyzer = analyzer
+        analyzerFormat = format
+        inputConverter = try await AnalyzerInputConverter.converter(compatibleWith: modules)
         try await analyzer.prepareToAnalyze(in: format)
 
         resultTask = Task { [weak self] in
@@ -177,7 +199,7 @@ actor SpeechMeterPipeline {
         let output = CaptureOutput { [weak self] sampleBuffer in
             guard CMSampleBufferDataIsReady(sampleBuffer) else { return }
             let ready = CMReadySampleBuffer<CMReadOnlyDataBlockBuffer>(unsafeWithDataBuffer: sampleBuffer)
-            Task { await self?.yield(AnalyzerInput(buffer: ready)) }
+            Task { await self?.yield(ready) }
         }
         self.output = output
         let stream = SCStream(filter: filter, configuration: configuration, delegate: output)
@@ -186,7 +208,45 @@ actor SpeechMeterPipeline {
         try await stream.startCapture()
     }
 
-    private func yield(_ input: AnalyzerInput) { inputContinuation?.yield(input) }
+    private func yield(_ sampleBuffer: CMReadySampleBuffer<CMReadOnlyDataBlockBuffer>) {
+        do {
+            let directInput = AnalyzerInput(buffer: sampleBuffer)
+            if directInput.bufferFormat == analyzerFormat {
+                inputContinuation?.yield(directInput)
+                return
+            }
+
+            guard let inputConverter else { throw PipelineError.unsupported("Audio conversion is unavailable") }
+            let pcmBuffer = try Self.pcmBuffer(from: sampleBuffer)
+            let sampleTime = AVAudioFramePosition(sampleBuffer.presentationTimeStamp.seconds * pcmBuffer.format.sampleRate)
+            let audioTime = AVAudioTime(sampleTime: sampleTime, atRate: pcmBuffer.format.sampleRate)
+            for input in try inputConverter.convert(pcmBuffer, at: audioTime) {
+                inputContinuation?.yield(input)
+            }
+        } catch {
+            report(.failed("System audio could not be converted for speech analysis"))
+        }
+    }
+
+    private static func pcmBuffer(from sampleBuffer: CMReadySampleBuffer<CMReadOnlyDataBlockBuffer>) throws -> AVAudioPCMBuffer {
+        guard
+            let streamDescription = CMAudioFormatDescriptionGetStreamBasicDescription(sampleBuffer.formatDescription),
+            let format = AVAudioFormat(streamDescription: streamDescription),
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(sampleBuffer.sampleCount))
+        else { throw PipelineError.unsupported("System audio has an unsupported format") }
+
+        buffer.frameLength = AVAudioFrameCount(sampleBuffer.sampleCount)
+        let status = sampleBuffer.withUnsafeSampleBuffer { unsafeBuffer in
+            CMSampleBufferCopyPCMDataIntoAudioBufferList(
+                unsafeBuffer,
+                at: 0,
+                frameCount: Int32(sampleBuffer.sampleCount),
+                into: buffer.mutableAudioBufferList
+            )
+        }
+        guard status == noErr else { throw PipelineError.unsupported("System audio could not be copied") }
+        return buffer
+    }
 
     private func consume(text: AttributedString, range: CMTimeRange) {
         let start = range.start.seconds
