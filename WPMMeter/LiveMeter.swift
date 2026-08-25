@@ -96,8 +96,10 @@ actor SpeechMeterPipeline {
     private var stream: SCStream?
     private var analyzer: SpeechAnalyzer?
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
+    private var captureContinuation: AsyncStream<CMReadySampleBuffer<CMReadOnlyDataBlockBuffer>>.Continuation?
     private var resultTask: Task<Void, Never>?
     private var analysisTask: Task<Void, Never>?
+    private var audioTask: Task<Void, Never>?
     private var output: CaptureOutput?
     private var analyzerFormat: AVAudioFormat?
     private var inputConverter: AnalyzerInputConverter?
@@ -132,8 +134,10 @@ actor SpeechMeterPipeline {
 
     func stop() async {
         inputContinuation?.finish()
+        captureContinuation?.finish()
         resultTask?.cancel()
         analysisTask?.cancel()
+        audioTask?.cancel()
         if let stream { try? await stream.stopCapture() }
         await analyzer?.cancelAndFinishNow()
         self.stream = nil
@@ -141,6 +145,7 @@ actor SpeechMeterPipeline {
         analyzerFormat = nil
         inputConverter = nil
         output = nil
+        captureContinuation = nil
         estimator.reset()
     }
 
@@ -157,7 +162,7 @@ actor SpeechMeterPipeline {
             throw PipelineError.unsupported("No compatible audio format is available")
         }
 
-        let inputs = AsyncStream<AnalyzerInput>(bufferingPolicy: .bufferingNewest(24)) { inputContinuation = $0 }
+        let inputs = AsyncStream<AnalyzerInput>(bufferingPolicy: .bufferingOldest(128)) { inputContinuation = $0 }
         let analyzer = SpeechAnalyzer(modules: modules)
         self.analyzer = analyzer
         analyzerFormat = format
@@ -196,10 +201,25 @@ actor SpeechMeterPipeline {
         configuration.height = 2
         configuration.queueDepth = 1
 
-        let output = CaptureOutput { [weak self] sampleBuffer in
+        let capturedBuffers = AsyncStream<CMReadySampleBuffer<CMReadOnlyDataBlockBuffer>>(
+            bufferingPolicy: .bufferingOldest(128)
+        ) { captureContinuation = $0 }
+        guard let captureContinuation else { throw PipelineError.unsupported("Audio buffering is unavailable") }
+
+        audioTask = Task { [weak self] in
+            for await sampleBuffer in capturedBuffers {
+                guard !Task.isCancelled else { return }
+                await self?.yield(sampleBuffer)
+            }
+        }
+
+        let output = CaptureOutput { [report] sampleBuffer in
             guard CMSampleBufferDataIsReady(sampleBuffer) else { return }
             let ready = CMReadySampleBuffer<CMReadOnlyDataBlockBuffer>(unsafeWithDataBuffer: sampleBuffer)
-            Task { await self?.yield(ready) }
+            if case .dropped = captureContinuation.yield(ready) {
+                captureContinuation.finish()
+                report(.failed("System audio arrived faster than it could be analyzed"))
+            }
         }
         self.output = output
         let stream = SCStream(filter: filter, configuration: configuration, delegate: output)
@@ -212,7 +232,7 @@ actor SpeechMeterPipeline {
         do {
             let directInput = AnalyzerInput(buffer: sampleBuffer)
             if directInput.bufferFormat == analyzerFormat {
-                inputContinuation?.yield(directInput)
+                try yieldToAnalyzer(directInput)
                 return
             }
 
@@ -221,10 +241,18 @@ actor SpeechMeterPipeline {
             let sampleTime = AVAudioFramePosition(sampleBuffer.presentationTimeStamp.seconds * pcmBuffer.format.sampleRate)
             let audioTime = AVAudioTime(sampleTime: sampleTime, atRate: pcmBuffer.format.sampleRate)
             for input in try inputConverter.convert(pcmBuffer, at: audioTime) {
-                inputContinuation?.yield(input)
+                try yieldToAnalyzer(input)
             }
         } catch {
             report(.failed("System audio could not be converted for speech analysis"))
+        }
+    }
+
+    private func yieldToAnalyzer(_ input: AnalyzerInput) throws {
+        guard let inputContinuation else { throw PipelineError.unsupported("Speech input is unavailable") }
+        if case .dropped = inputContinuation.yield(input) {
+            inputContinuation.finish()
+            throw PipelineError.unsupported("Speech analysis could not keep up with system audio")
         }
     }
 
