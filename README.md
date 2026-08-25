@@ -1,7 +1,7 @@
 # WPM Meter
 
 A native macOS menu-bar utility that measures the pace of spoken system audio.
-It captures system audio with ScreenCaptureKit, analyzes speech locally with
+It captures system audio with a Core Audio process tap, analyzes speech locally with
 Apple's on-device models, and keeps audio and recognition state only in memory.
 
 WPM Meter supports English by default and Danish through a persistent checkbox.
@@ -15,7 +15,7 @@ chosen goal.
 3. Press **Run**.
 
 The app appears only in the menu bar because `LSUIElement` is enabled. On first
-run, macOS requests Screen & System Audio Recording access. Audio is never saved
+run, macOS requests System Audio Recording Only access. Audio is never saved
 or uploaded; network access is used only when macOS downloads an Apple speech
 model selected by the user.
 

@@ -22,5 +22,7 @@
 	<string>public.app-category.productivity</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>WPM Meter needs access to system audio to calculate the speaking rate. Audio stays on this Mac and is never saved.</string>
 </dict>
 </plist>

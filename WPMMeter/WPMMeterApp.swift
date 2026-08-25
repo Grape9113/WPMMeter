@@ -45,11 +45,27 @@ struct WPMMeterApp: App {
             .onChange(of: targetEnabled) { _, _ in updateTargetState(reset: true) }
             .onChange(of: targetWPM) { _, _ in updateTargetState(reset: true) }
         } label: {
-            Text(meter.wordsPerMinute.map { "\($0) WPM" } ?? "—")
-                .monospacedDigit().foregroundStyle(belowTarget ? .red : .primary)
+            Image(nsImage: statusImage)
+                .renderingMode(.original)
                 .accessibilityLabel(meter.wordsPerMinute.map { "\($0) words per minute" } ?? "No WPM measurement")
         }
         .menuBarExtraStyle(.window)
+    }
+
+    private var statusImage: NSImage {
+        let text = meter.wordsPerMinute.map { "\($0) WPM" } ?? "—"
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
+            .foregroundColor: belowTarget ? NSColor.systemRed : NSColor.labelColor,
+        ]
+        let title = NSAttributedString(string: text, attributes: attributes)
+        let size = title.size()
+        let image = NSImage(size: size, flipped: false) { _ in
+            title.draw(at: .zero)
+            return true
+        }
+        image.isTemplate = false
+        return image
     }
 
     private func applyRunningState() {

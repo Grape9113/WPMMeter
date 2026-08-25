@@ -11,6 +11,7 @@
 		A20000000000000000000001 /* WPMEstimator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* WPMEstimator.swift */; };
 		A20000000000000000000003 /* WPMEstimatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* WPMEstimatorTests.swift */; };
 		A30000000000000000000001 /* LiveMeter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A30000000000000000000002 /* LiveMeter.swift */; };
+		A40000000000000000000001 /* SystemAudioCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = A40000000000000000000002 /* SystemAudioCapture.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -31,6 +32,7 @@
 		A20000000000000000000004 /* WPMEstimatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WPMEstimatorTests.swift; sourceTree = "<group>"; };
 		A20000000000000000000005 /* WPMMeterTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WPMMeterTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A30000000000000000000002 /* LiveMeter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveMeter.swift; sourceTree = "<group>"; };
+		A40000000000000000000002 /* SystemAudioCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemAudioCapture.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -65,6 +67,7 @@
 			children = (
 				A10000000000000000000002 /* WPMMeterApp.swift */,
 				A30000000000000000000002 /* LiveMeter.swift */,
+				A40000000000000000000002 /* SystemAudioCapture.swift */,
 				A20000000000000000000002 /* WPMEstimator.swift */,
 				A10000000000000000000003 /* Info.plist */,
 			);
@@ -184,6 +187,7 @@
 			files = (
 				A10000000000000000000001 /* WPMMeterApp.swift in Sources */,
 				A30000000000000000000001 /* LiveMeter.swift in Sources */,
+				A40000000000000000000001 /* SystemAudioCapture.swift in Sources */,
 				A20000000000000000000001 /* WPMEstimator.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

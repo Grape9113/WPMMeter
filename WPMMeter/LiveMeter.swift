@@ -1,7 +1,7 @@
 import AppKit
 import AVFoundation
 import CoreMedia
-import ScreenCaptureKit
+import CoreAudio
 import Speech
 
 enum MeterStatus: Equatable {
@@ -93,15 +93,12 @@ actor SpeechMeterPipeline {
     private let danish: Bool
     private let report: @Sendable (Event) -> Void
     private var estimator = WPMEstimator()
-    private var stream: SCStream?
+    private var capture: SystemAudioCapture?
     private var analyzer: SpeechAnalyzer?
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
-    private var captureContinuation: AsyncStream<CMReadySampleBuffer<CMReadOnlyDataBlockBuffer>>.Continuation?
     private var resultTask: Task<Void, Never>?
     private var analysisTask: Task<Void, Never>?
     private var audioTask: Task<Void, Never>?
-    private var output: CaptureOutput?
-    private var analyzerFormat: AVAudioFormat?
     private var inputConverter: AnalyzerInputConverter?
     private var lastAudioTime: TimeInterval?
     private var lastResultUptime: TimeInterval?
@@ -123,7 +120,7 @@ actor SpeechMeterPipeline {
                 let module = SpeechTranscriber(locale: locale, preset: .timeIndexedProgressiveTranscription)
                 try await run(module: module, results: module.results)
             }
-        } catch let error as SCStreamError where error.code == .userDeclined {
+        } catch SystemAudioCapture.Error.permissionDenied {
             report(.permissionRequired)
         } catch let error as PipelineError {
             report(.failed(error.message))
@@ -134,18 +131,14 @@ actor SpeechMeterPipeline {
 
     func stop() async {
         inputContinuation?.finish()
-        captureContinuation?.finish()
         resultTask?.cancel()
         analysisTask?.cancel()
         audioTask?.cancel()
-        if let stream { try? await stream.stopCapture() }
+        capture?.stop()
         await analyzer?.cancelAndFinishNow()
-        self.stream = nil
+        capture = nil
         analyzer = nil
-        analyzerFormat = nil
         inputConverter = nil
-        output = nil
-        captureContinuation = nil
         estimator.reset()
     }
 
@@ -165,7 +158,6 @@ actor SpeechMeterPipeline {
         let inputs = AsyncStream<AnalyzerInput>(bufferingPolicy: .bufferingOldest(128)) { inputContinuation = $0 }
         let analyzer = SpeechAnalyzer(modules: modules)
         self.analyzer = analyzer
-        analyzerFormat = format
         inputConverter = try await AnalyzerInputConverter.converter(compatibleWith: modules)
         try await analyzer.prepareToAnalyze(in: format)
 
@@ -182,64 +174,25 @@ actor SpeechMeterPipeline {
             catch { report(.failed("Speech analysis stopped unexpectedly")) }
         }
 
-        try await startCapture(sampleRate: Int(format.sampleRate), channelCount: Int(format.channelCount))
+        try startCapture()
         report(.ready)
     }
 
-    private func startCapture(sampleRate: Int, channelCount: Int) async throws {
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-        guard let display = content.displays.first else { throw PipelineError.unsupported("No display is available for system audio capture") }
-        let ownBundleID = Bundle.main.bundleIdentifier
-        let ownApps = content.applications.filter { $0.bundleIdentifier == ownBundleID }
-        let filter = SCContentFilter(display: display, excludingApplications: ownApps, exceptingWindows: [])
-        let configuration = SCStreamConfiguration()
-        configuration.capturesAudio = true
-        configuration.excludesCurrentProcessAudio = true
-        configuration.sampleRate = sampleRate
-        configuration.channelCount = channelCount
-        configuration.width = 2
-        configuration.height = 2
-        configuration.queueDepth = 1
-
-        let capturedBuffers = AsyncStream<CMReadySampleBuffer<CMReadOnlyDataBlockBuffer>>(
-            bufferingPolicy: .bufferingOldest(128)
-        ) { captureContinuation = $0 }
-        guard let captureContinuation else { throw PipelineError.unsupported("Audio buffering is unavailable") }
-
+    private func startCapture() throws {
+        let capture = try SystemAudioCapture()
+        self.capture = capture
+        try capture.start()
         audioTask = Task { [weak self] in
-            for await sampleBuffer in capturedBuffers {
+            for await audio in capture.audio {
                 guard !Task.isCancelled else { return }
-                await self?.yield(sampleBuffer)
+                await self?.yield(audio.buffer, at: audio.time)
             }
         }
-
-        let output = CaptureOutput { [report] sampleBuffer in
-            guard CMSampleBufferDataIsReady(sampleBuffer) else { return }
-            let ready = CMReadySampleBuffer<CMReadOnlyDataBlockBuffer>(unsafeWithDataBuffer: sampleBuffer)
-            if case .dropped = captureContinuation.yield(ready) {
-                captureContinuation.finish()
-                report(.failed("System audio arrived faster than it could be analyzed"))
-            }
-        }
-        self.output = output
-        let stream = SCStream(filter: filter, configuration: configuration, delegate: output)
-        self.stream = stream
-        try stream.addStreamOutput(output, type: .audio, sampleHandlerQueue: output.queue)
-        try await stream.startCapture()
     }
 
-    private func yield(_ sampleBuffer: CMReadySampleBuffer<CMReadOnlyDataBlockBuffer>) {
+    private func yield(_ pcmBuffer: AVAudioPCMBuffer, at audioTime: AVAudioTime) {
         do {
-            let directInput = AnalyzerInput(buffer: sampleBuffer)
-            if directInput.bufferFormat == analyzerFormat {
-                try yieldToAnalyzer(directInput)
-                return
-            }
-
             guard let inputConverter else { throw PipelineError.unsupported("Audio conversion is unavailable") }
-            let pcmBuffer = try Self.pcmBuffer(from: sampleBuffer)
-            let sampleTime = AVAudioFramePosition(sampleBuffer.presentationTimeStamp.seconds * pcmBuffer.format.sampleRate)
-            let audioTime = AVAudioTime(sampleTime: sampleTime, atRate: pcmBuffer.format.sampleRate)
             for input in try inputConverter.convert(pcmBuffer, at: audioTime) {
                 try yieldToAnalyzer(input)
             }
@@ -254,26 +207,6 @@ actor SpeechMeterPipeline {
             inputContinuation.finish()
             throw PipelineError.unsupported("Speech analysis could not keep up with system audio")
         }
-    }
-
-    private static func pcmBuffer(from sampleBuffer: CMReadySampleBuffer<CMReadOnlyDataBlockBuffer>) throws -> AVAudioPCMBuffer {
-        guard
-            let streamDescription = CMAudioFormatDescriptionGetStreamBasicDescription(sampleBuffer.formatDescription),
-            let format = AVAudioFormat(streamDescription: streamDescription),
-            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(sampleBuffer.sampleCount))
-        else { throw PipelineError.unsupported("System audio has an unsupported format") }
-
-        buffer.frameLength = AVAudioFrameCount(sampleBuffer.sampleCount)
-        let status = sampleBuffer.withUnsafeSampleBuffer { unsafeBuffer in
-            CMSampleBufferCopyPCMDataIntoAudioBufferList(
-                unsafeBuffer,
-                at: 0,
-                frameCount: Int32(sampleBuffer.sampleCount),
-                into: buffer.mutableAudioBufferList
-            )
-        }
-        guard status == noErr else { throw PipelineError.unsupported("System audio could not be copied") }
-        return buffer
     }
 
     private func consume(text: AttributedString, range: CMTimeRange) {
@@ -322,16 +255,4 @@ actor SpeechMeterPipeline {
 private enum PipelineError: Error {
     case unsupported(String)
     var message: String { switch self { case .unsupported(let message): message } }
-}
-
-private final class CaptureOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
-    let queue = DispatchQueue(label: "WPMMeter.system-audio", qos: .userInitiated)
-    private let handler: @Sendable (CMSampleBuffer) -> Void
-
-    init(handler: @escaping @Sendable (CMSampleBuffer) -> Void) { self.handler = handler }
-
-    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .audio else { return }
-        handler(sampleBuffer)
-    }
 }
