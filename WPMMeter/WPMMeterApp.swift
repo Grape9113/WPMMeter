@@ -48,7 +48,6 @@ struct WPMMeterApp: App {
             Text(meter.wordsPerMinute.map { "\($0) WPM" } ?? "—")
                 .monospacedDigit().foregroundStyle(belowTarget ? .red : .primary)
                 .accessibilityLabel(meter.wordsPerMinute.map { "\($0) words per minute" } ?? "No WPM measurement")
-                .onAppear { applyRunningState() }
         }
         .menuBarExtraStyle(.window)
     }
