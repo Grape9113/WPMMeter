@@ -1,13 +1,28 @@
 # WPM Meter
 
-A minimal native macOS menu-bar app built with SwiftUI. It currently displays a
-placeholder `0 WPM`; audio capture and speech recognition are intentionally not
-implemented yet.
+A native macOS menu-bar utility that measures the pace of spoken system audio.
+It captures system audio with ScreenCaptureKit, analyzes speech locally with
+Apple's on-device models, and keeps audio and recognition state only in memory.
+
+WPM Meter supports English by default and Danish through a persistent checkbox.
+An optional target colors the current WPM red when listening pace is below the
+chosen goal.
 
 ## Run
 
-1. Open `WPMMeter.xcodeproj` in Xcode 14 or newer.
+1. Open `WPMMeter.xcodeproj` in Xcode 27 or newer on macOS 27.
 2. Select the **WPMMeter** scheme and **My Mac** destination.
 3. Press **Run**.
 
-The app appears only in the menu bar because `LSUIElement` is enabled.
+The app appears only in the menu bar because `LSUIElement` is enabled. On first
+run, macOS requests Screen & System Audio Recording access. Audio is never saved
+or uploaded; network access is used only when macOS downloads an Apple speech
+model selected by the user.
+
+## Test
+
+Run the `WPMMeter` scheme's test action in Xcode, or:
+
+```sh
+xcodebuild -project WPMMeter.xcodeproj -scheme WPMMeter -destination 'platform=macOS' test
+```
